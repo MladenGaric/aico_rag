@@ -68,3 +68,28 @@ aico_rag/
          python ask_hybrid_simple.py "Your question..." --k 5 --kg_limit 6
 
 
+1. My solution design was simple and modular. I first created a simple RAG solution with chromadb vectorestore. I provided it data
+from Wiki and created a prompt that tells the LLM model what it should do based on what text. I used both MMR and cosine
+similarity for search, but per default I made it MMR.
+After that, I created a simple Knowledge Graph using pydentic and networkX, to extract information about the data regarding
+triplets, having in mind Subject-relation-object schema, and I also wanted to show evidence on the made relation, along
+the datasource it was extracted from.
+After that, I created a simple ask_graph.py script in order to ask LLM anything, where he would gather data from KB.
+On top of that, I combined the two, creating a hybrid approach utlizing both RAG and KG.
+
+2. I used specific tech mostly because it is well-known tech-stack. Langchain, OpenAI, chromaDB and networkX are
+all well known frameworks to work in when building such systems.
+
+3. Yes, of course! I faced many challenged of which telemetry annoying stuff was the worst. When I finally tought I
+found the way to scilence it, poof, there it is again. So that callenge i overcame with my inner strength and decided
+to ignore it. Other than that, I faced challenges with various library versions, where it was hard to find the right
+combination of libraries to work in. I checked in documentation, and finally found the combination to work with!
+Also, I faced chellange with chromaDB, where I couldn't insert all of data at once, but instead I created a batch insertion method.
+
+
+4. The KG improves on RAG system:
+a) Explicit relationships
+b) Graph paths reveal connections that RAG cannot infer
+c) LLM gets ready-made factual triples instead of scanning raw text.
+
+
