@@ -28,7 +28,7 @@ aico_rag/
 
 [1] Prepare data
     └─ Put all .txt Wikipedia files into:
-       aico_rag/data/documents/
+       aico_rag/data/docs/
 
         ↓
 
