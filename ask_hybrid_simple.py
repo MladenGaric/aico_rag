@@ -1,9 +1,7 @@
 import os
-import json
 import argparse
 from pathlib import Path
-from typing import Optional, List, Literal
-
+from typing import Optional, List
 from dotenv import load_dotenv
 
 # RAG
@@ -31,13 +29,36 @@ def _uniq(seq):
             out.append(x)
     return out
 
-def rag_topk(question: str, db_dir: str, collection: str, k: int) -> List[Document]:
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    vs = Chroma(collection_name=collection, persist_directory=db_dir, embedding_function=embeddings)
-    results = vs.similarity_search_with_score(question, k=k)
-    return [doc for doc, score in results]
+def rag_topk_lc(
+    question: str,
+    db_dir: str,
+    collection: str,
+    k: int,
+    score_threshold: float = 0.7
+) -> List[Document]:
 
-class KGPick(BaseModel):
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+
+    vs = Chroma(
+        collection_name=collection,
+        persist_directory=db_dir,
+        embedding_function=embeddings,
+        collection_metadata={"hnsw:space": "cosine"},
+    )
+
+    retriever = vs.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={
+            "k": k,
+            "score_threshold": score_threshold,
+        },
+    )
+
+    docs: List[Document] = retriever.invoke(question)
+    return docs
+
+
+class KGQuery(BaseModel):
     entity: Optional[str] = Field(None, description="Glavni entitet u pitanju.")
     relation: Optional[str] = Field(None, description="Ako je pomenuta konkretna relacija (npr. 'born in').")
     limit: int = Field(5, description="Koliko ivica vratiti (neighbors).")
@@ -45,26 +66,29 @@ class KGPick(BaseModel):
 def load_graph() -> Optional[nx.MultiDiGraph]:
     if not GRAPHML_PATH.exists():
         return None
-    G = nx.read_graphml(GRAPHML_PATH)
-    MG = nx.MultiDiGraph()
-    MG.add_nodes_from(G.nodes(data=True))
-    for u, v, data in G.edges(data=True):
-        MG.add_edge(u, v, **data)
-    return MG
 
-def fuzzy_find_node(G: nx.Graph, name: str, cutoff=80) -> Optional[str]:
+    return nx.read_graphml(GRAPHML_PATH)
+
+def fuzzy_find_node(G: nx.Graph, name: str, score_cutoff=0.6) -> Optional[str]:
     candidates = {nid: (data.get("label") or nid) for nid, data in G.nodes(data=True)}
-    match = process.extractOne(name, candidates.values(), scorer=fuzz.WRatio, score_cutoff=cutoff)
+    candidates = {
+        nid: lab
+        for nid, lab in candidates.items()
+        if str(lab).strip()
+    }
+
+    match = process.extractOne(name, candidates.values(), scorer=fuzz.WRatio, score_cutoff=score_cutoff)
     if not match:
         return None
     label = match[0]
     for nid, lab in candidates.items():
-        if lab == label:
+        if lab.lower() in label.lower() or lab.lower() == label.lower():
             return nid
     return None
 
 def kg_neighbors(question: str, kg: nx.MultiDiGraph, llm: ChatOpenAI, limit: int) -> List[dict]:
-    parser = llm.with_structured_output(KGPick)
+    parser = llm.with_structured_output(KGQuery)
+
     plan = parser.invoke([
         ("system",
          "Extract the main entity (and optional relation) from the user's question. "
@@ -75,7 +99,7 @@ def kg_neighbors(question: str, kg: nx.MultiDiGraph, llm: ChatOpenAI, limit: int
     if not plan.entity:
         return []
 
-    nid = fuzzy_find_node(kg, plan.entity)
+    nid = fuzzy_find_node(kg, name=plan.entity)
     if not nid:
         return []
 
@@ -92,7 +116,7 @@ def kg_neighbors(question: str, kg: nx.MultiDiGraph, llm: ChatOpenAI, limit: int
             "source": data.get("source", ""),
             "evidence": (data.get("evidence", "") or "").replace("\n", " ")
         })
-        if len(out) >= min(plan.limit, limit):
+        if len(out) >= min(plan.limit, limit): # Opcionalno: Moze da se izbrise, ali onda vraca sve edges za nadjeni node
             break
     return out
 
@@ -101,14 +125,18 @@ def build_messages(question: str, rag_docs: List[Document], kg_facts: List[dict]
     for i, d in enumerate(rag_docs, 1):
         src = d.metadata.get("source") or d.metadata.get("path") or f"doc_{i}"
         rag_sources.append(src)
-        rag_blocks.append(f"[RAG #{i} | {src}]\n{_truncate(d.page_content, 1000)}")
+        rag_blocks.append(f"[Chunk {i} | {src}]\n{_truncate(d.page_content, 1000)}")
     rag_ctx = "\n\n".join(rag_blocks) if rag_blocks else "(no RAG context)"
 
     kg_lines, kg_sources = [], []
-    for f in kg_facts:
+    for idx, f in enumerate(kg_facts, 1):
         kg_sources.append(f.get("source") or "")
         evid = f.get("evidence") or ""
-        kg_lines.append(f"- {f['subject']} --{f['relation']}--> {f['object']}  [src: {f.get('source','')}]  {('evidence: ' + evid) if evid else ''}")
+        kg_lines.append(
+            f"[KG Fact {idx}] "
+            f"{f['subject']} --{f['relation']}--> {f['object']}  "
+            f"[src: {f.get('source', '')}]  {('evidence: ' + evid) if evid else ''}"
+        )
     kg_ctx = "\n".join(kg_lines) if kg_lines else "(no KG facts)"
 
     sys = (
@@ -116,19 +144,19 @@ def build_messages(question: str, rag_docs: List[Document], kg_facts: List[dict]
         "- Use KG facts for crisp relational answers.\n"
         "- Use RAG passages for descriptions/details.\n"
         "If missing info, say you are unsure.\n"
-        "Answer briefly, then list 'Sources (RAG)' and 'Sources (KG)'."
-    )
+        )
+
     usr = f"Question: {question}\n\n=== RAG ===\n{rag_ctx}\n\n=== KG ===\n{kg_ctx}"
 
     return [("system", sys), ("user", usr)], _uniq(rag_sources), _uniq(kg_sources)
 
 def main():
     ap = argparse.ArgumentParser(description="Simple Hybrid QA (RAG + KG neighbors).")
-    ap.add_argument("question", type=str, nargs="+", help="Pitanje.")
+    ap.add_argument("--question", type=str, default= "Who is Alexei Navalny?",nargs="+", help="Pitanje.")
     ap.add_argument("--db_dir", default=DEF_DB_DIR)
     ap.add_argument("--collection", default=DEF_COLLECTION)
-    ap.add_argument("--k", type=int, default=5, help="RAG top-k pasusa.")
-    ap.add_argument("--kg_limit", type=int, default=6, help="Max KG fakata.")
+    ap.add_argument("--k", type=int, default=3, help="RAG top-k pasusa.")
+    ap.add_argument("--kg_limit", type=int, default=3, help="Max KG cinjenica.")
     args = ap.parse_args()
 
     load_dotenv()
@@ -138,18 +166,15 @@ def main():
     q = " ".join(args.question)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-    rag_docs = rag_topk(q, args.db_dir, args.collection, k=args.k)
+    rag_docs = rag_topk_lc(q, args.db_dir, args.collection, k=args.k, score_threshold=0.15)
 
-    kg_facts = []
     kg = load_graph()
-    if kg is not None:
-        kg_facts = kg_neighbors(q, kg, llm, limit=args.kg_limit)
+    kg_facts = kg_neighbors(q, kg, llm, limit=args.kg_limit)
 
     messages, rag_srcs, kg_srcs = build_messages(q, rag_docs, kg_facts)
-    resp = llm.invoke(messages)
-    output = (resp.content or "").strip()
+    response = llm.invoke(messages)
 
-
+    output = (response.content or "").strip()
 
     if rag_srcs:
         print("\n=== IZVORI (RAG) ===")

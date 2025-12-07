@@ -13,12 +13,16 @@ GRAPHML = OUT_DIR / "kg.graphml"
 
 def norm(s: str) -> str:
     return " ".join(s.strip().split()).casefold()
+# "straße".lower()      # "straße"
+# "straße".casefold()   # "strasse"
 
 def main():
     if not IN_JSONL.exists():
         raise RuntimeError(f"Nije pronađen fajl: {IN_JSONL}. Pokreni kg_extract.py prvo.")
 
     G = nx.MultiDiGraph()
+    # DiGraph: A --> B <> B --> A
+    # Multi: Allows for multiple edges between same nodes
 
     nodes_seen = {}
     edges = []
@@ -31,7 +35,7 @@ def main():
 
             s = norm(s_raw)
             o = norm(o_raw)
-            r = " ".join(r.strip().split()).lower()
+            r = norm(r)
 
             if s not in nodes_seen:
                 nodes_seen[s] = {"label": s_raw}
@@ -42,7 +46,7 @@ def main():
             G.add_node(o, **nodes_seen[o])
 
             # ivica ima: relation, evidence, source, raw_subj/obj
-            G.add_edge(s, o, key=r, relation=r, evidence=ev, source=src,
+            G.add_edge(s, o, relation=r, evidence=ev, source=src,
                        subj_label=s_raw, obj_label=o_raw)
 
             edges.append({

@@ -15,16 +15,22 @@ class KGQuery(BaseModel):
     entity: Optional[str] = Field(None, description="Glavni entitet (za neighbors/relation).")
     relation: Optional[str] = Field(None, description="Ako je poznata ciljna relacija (npr. 'born in').")
     entity_b: Optional[str] = Field(None, description="Drugi entitet (za shortest_path).")
-    limit: int = Field(5, description="Koliko rezultata vratiti (podrazumevano 5).")
+    limit: int = Field(15, description="Koliko rezultata vratiti (podrazumevano 5).")
 
-def fuzzy_find_node(G: nx.Graph, name: str, score_cutoff=80) -> Optional[str]:
+def fuzzy_find_node(G: nx.Graph, name: str, score_cutoff=0.9) -> Optional[str]:
     candidates = {nid: (data.get("label") or nid) for nid, data in G.nodes(data=True)}
+    candidates = {
+        nid: lab
+        for nid, lab in candidates.items()
+        if str(lab).strip()  # ovo izbacuje "" i "   "
+    }
+
     match = process.extractOne(name, candidates.values(), scorer=fuzz.WRatio, score_cutoff=score_cutoff)
     if not match:
         return None
     label = match[0]
     for nid, lab in candidates.items():
-        if lab == label:
+        if lab.lower() in label.lower() or lab.lower() == label.lower():
             return nid
     return None
 
@@ -32,7 +38,7 @@ def plan_query(question: str, llm: ChatOpenAI) -> KGQuery:
     system = (
         "Map the user question to a simple knowledge-graph query.\n"
         "Choose one: 'neighbors', 'relation', or 'shortest_path'.\n"
-        "If the question is 'Who/What is X' prefer 'neighbors' with limit≈5.\n"
+        "If the question is 'Who/What is X' prefer 'neighbors' with limit≈10.\n"
         "If it asks for a specific predicate (e.g., born in), prefer 'relation'.\n"
         "If it asks how X is connected to Y, use 'shortest_path'.\n"
         "Return only the JSON object."
@@ -50,15 +56,15 @@ def execute_query(G: nx.MultiDiGraph, q: KGQuery) -> List[dict]:
         if not nid:
             return out
 
-        for u, v, k, data in G.out_edges(nid, keys=True, data=True):
+        for s, o, r, data in G.out_edges(nid, keys=True, data=True):
             rel = data.get("relation", "")
             if q.kind == "relation" and q.relation:
                 if rel != q.relation.lower():
                     continue
             out.append({
-                "subject": G.nodes[u].get("label", u),
+                "subject": G.nodes[s].get("label", s),
                 "relation": rel,
-                "object": G.nodes[v].get("label", v),
+                "object": G.nodes[o].get("label", o),
                 "source": data.get("source", ""),
                 "evidence": data.get("evidence", "")
             })
@@ -98,20 +104,13 @@ def main():
     if not GRAPHML.exists():
         raise RuntimeError("Nema grafa. Pokreni: kg_extract.py pa kg_build.py")
 
-    G = nx.read_graphml(GRAPHML)
-    MG = nx.MultiDiGraph()
-    MG.add_nodes_from(G.nodes(data=True))
-    for u, v, data in G.edges(data=True):
-        MG.add_edge(u, v, **data)
-
+    MG = nx.read_graphml(GRAPHML)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
     question = input("Unesi pitanje za KG: ").strip()
+    # question = 'Who was Joseph Garba?'
     plan = plan_query(question, llm)
     results = execute_query(MG, plan)
-
-    print("\n=== PLAN ===")
-    print(plan.json(indent=2, ensure_ascii=False))
 
     print("\n=== ODGOVOR (KG) ===")
     if not results:
