@@ -1,6 +1,6 @@
 aico_rag/
 ├── data/
-│   └── documents/                 # Input .txt documents (Wikipedia texts)
+│   └── docs/                      # Input .txt documents (Wikipedia texts)
 ├── local_chroma/                  # Vector database for RAG (automatically generated)
 ├── artifacts/
 │   ├── kg_triples.jsonl           # Extracted KG triples (subject, relation, object)

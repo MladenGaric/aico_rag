@@ -3,9 +3,6 @@ import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-os.environ["CHROMADB_TELEMETRY"] = "False"
-
 from chromadb.config import Settings
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -13,7 +10,10 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 import shutil
 
-DEFAULT_DOCS_DIR = Path("data/documents")
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMADB_TELEMETRY"] = "False"
+
+DEFAULT_DOCS_DIR = Path("data/docs")
 DEFAULT_DB_DIR = Path("local_chroma")
 DEFAULT_COLLECTION = "docs"
 
@@ -44,7 +44,7 @@ def main():
     parser.add_argument("--reset", action="store_true", help="Obriši postojeću bazu pre ingest-a.")
     parser.add_argument("--chunk_size", type=int, default=1000, help="Veličina chunk-a.")
     parser.add_argument("--chunk_overlap", type=int, default=200, help="Preklapanje chunk-ova.")
-    parser.add_argument("--batch_size", type=int, default=2000, help="Max broj dokumenata po upisu (mora < Chroma max).")
+    parser.add_argument("--batch_size", type=int, default=2000, help="Max broj batcha po upisu (mora < Chroma max).")
     args = parser.parse_args()
 
     load_dotenv()
@@ -75,13 +75,14 @@ def main():
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
     client_settings = Settings(
         is_persistent=True,
-        anonymized_telemetry=False,
+        anonymized_telemetry=True
     )
     vs = Chroma(
         collection_name=args.collection,
         persist_directory=str(db_dir),
         embedding_function=embeddings,
         client_settings=client_settings,
+        collection_metadata={"hnsw:space": "cosine"}
     )
 
     inserted = 0
